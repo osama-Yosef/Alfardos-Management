@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "212546816206",
+    "project_id": "alfardos-mgmt",
+    "storage_bucket": "alfardos-mgmt.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:212546816206:android:bcc5b9d97cece66be7a89f",
+        "android_client_info": {
+          "package_name": "af.alfardos.app_alfardos"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAAijxJoKjuMdXk87mFqIDcbARxY5etQv8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,35 @@
+rules_version = '2';
+
+// Files: company logo (managed in settings) and expense receipts.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function member() {
+      return request.auth != null
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.active == true;
+    }
+    function can(p) {
+      return member()
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.permissions.hasAny(['admin', p]);
+    }
+
+    match /company/{file} {
+      allow read: if request.auth != null;
+      allow write: if can('manage_settings')
+        && request.resource.size < 2 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    match /expenses/{expenseId}/{file} {
+      allow read: if member();
+      // Receipts are write-once: no overwriting or deleting evidence.
+      allow create: if can('create_expense')
+        && request.resource.size < 5 * 1024 * 1024
+        && (request.resource.contentType.matches('image/.*') || request.resource.contentType == 'application/pdf');
+      allow update, delete: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

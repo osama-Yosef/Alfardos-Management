@@ -1,0 +1,338 @@
+rules_version = '2';
+
+// Alfardos Management — Firestore security rules.
+//
+// Principles
+//  * Only active members (users/{uid}.active == true) can access data.
+//  * Permissions are stored on the user document (copied from the role) and
+//    checked here; client-side checks are UX only.
+//  * Financial records are immutable: no deletes, no edits. Cancellation is
+//    a new reversal transaction; the source document may only flip to
+//    "cancelled" together with that reversal.
+//  * Balances (cashboxes, customers, suppliers) can only change together
+//    with a *new* sub-ledger record in the same atomic write, and by exactly
+//    that record's amount. Each sub-ledger record in turn requires a new
+//    financial transaction created by a user allowed to post that type.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------ helpers
+    function doc(col, id) { return /databases/$(database)/documents/$(col)/$(id); }
+    function signedIn() { return request.auth != null; }
+    function me() { return get(doc('users', request.auth.uid)).data; }
+    function isMember() {
+      return signedIn() && exists(doc('users', request.auth.uid)) && me().active == true;
+    }
+    function can(p) { return isMember() && me().permissions.hasAny(['admin', p]); }
+    function canAny(ps) { return isMember() && (me().permissions.hasAny(['admin']) || me().permissions.hasAny(ps)); }
+    function data() { return request.resource.data; }
+    function changedKeys() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanged(keys) { return changedKeys().hasOnly(keys); }
+    function byMe() { return data().createdBy == request.auth.uid; }
+
+    // First-run setup: allowed only while meta/bootstrap does not exist and
+    // the same batch creates it naming the caller as administrator.
+    function bootstrapping() {
+      return signedIn()
+        && !exists(doc('meta', 'bootstrap'))
+        && getAfter(doc('meta', 'bootstrap')).data.adminUid == request.auth.uid;
+    }
+
+    // A financial transaction created in this very request.
+    function newFt(id) {
+      return id is string && !exists(doc('financial_transactions', id))
+        && existsAfter(doc('financial_transactions', id));
+    }
+
+    // Who may post each transaction type.
+    function canCancel(t) {
+      return t == 'sale' ? can('cancel_sales')
+        : t == 'purchase' ? can('cancel_purchases')
+        : t in ['customerPayment', 'supplierPayment', 'expense', 'transfer'] ? can('cancel_payments')
+        : false;
+    }
+    function canPost(t, original) {
+      return t == 'sale' ? can('create_sales')
+        : t == 'purchase' ? can('create_purchases')
+        : t == 'customerPayment' ? can('create_payment')
+        : t == 'supplierPayment' ? can('create_supplier_payment')
+        : t == 'expense' ? can('create_expense')
+        : t == 'transfer' ? can('create_transfer')
+        : t == 'customerOpening' ? can('manage_customers')
+        : t == 'supplierOpening' ? can('manage_suppliers')
+        : t == 'cashboxOpening' ? can('manage_cashboxes')
+        : t == 'stockOpening' ? can('manage_catalog')
+        : t == 'reversal' ? canCancel(original)
+        : false;
+    }
+
+    // Balance field change backed by a new sub-ledger record `txCol/lastTxId`.
+    function ledgerBalanceChange(txCol, idField, accountId, allowedKeys) {
+      let txId = data().lastTxId;
+      let tx = getAfter(doc(txCol, txId)).data;
+      return txId is string
+        && (resource == null || txId != resource.data.get('lastTxId', ''))
+        && !exists(doc(txCol, txId))
+        && existsAfter(doc(txCol, txId))
+        && tx[idField] == accountId
+        && data().balance == (resource == null ? 0 : resource.data.balance) + tx.amount
+        && (resource == null || onlyChanged(allowedKeys));
+    }
+
+    // Sub-ledger record creation: linked to a new financial transaction and
+    // to the account whose balance it sets.
+    function validSubLedger(txId, accountCol, idField) {
+      let d = data();
+      let account = getAfter(doc(accountCol, d[idField])).data;
+      return isMember() && byMe()
+        && newFt(d.financialTxId)
+        && txId == d.financialTxId + '_' + d[idField]
+        && account.lastTxId == txId
+        && account.balance == d.balanceAfter
+        && d.amount is int;
+    }
+
+    // Cancelling a business document: only the status/cancel fields change,
+    // and the reversal financial transaction is created in the same write.
+    function validCancellation() {
+      return resource.data.status == 'active'
+        && data().status == 'cancelled'
+        && onlyChanged(['status', 'cancelReason', 'cancelledAt', 'cancelledBy', 'cancelledByName',
+                        'reversalTxId', 'updatedAt', 'updatedBy'])
+        && data().cancelledBy == request.auth.uid
+        && newFt(resource.data.financialTxId + '_rev');
+    }
+
+    // A new business document posted through the ledger.
+    function validPostedDoc(id) {
+      return byMe() && data().financialTxId == id && newFt(id) && data().status == 'active';
+    }
+
+    // ------------------------------------------------------------ system
+    match /meta/bootstrap {
+      allow read: if true; // only a flag telling the app whether setup ran
+      allow create: if signedIn() && !exists(doc('meta', 'bootstrap'))
+        && data().adminUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || can('manage_users'));
+      allow list: if can('manage_users');
+      allow create: if (bootstrapping() && uid == request.auth.uid
+                        && data().permissions == ['admin'] && data().active == true)
+                    || can('manage_users');
+      allow update: if can('manage_users')
+        || (signedIn() && request.auth.uid == uid && isMember()
+            && onlyChanged(['name', 'phone', 'updatedAt']));
+      allow delete: if false;
+    }
+
+    match /roles/{id} {
+      allow read: if isMember();
+      allow create: if bootstrapping() || can('manage_users');
+      allow update: if can('manage_users');
+      allow delete: if false;
+    }
+
+    match /settings/{id} {
+      allow read: if isMember() || bootstrapping();
+      allow create: if bootstrapping() || can('manage_settings');
+      allow update: if can('manage_settings');
+      allow delete: if false;
+    }
+
+    match /counters/{id} {
+      allow read: if isMember();
+      allow create: if isMember() && data().value == 1001;
+      allow update: if isMember() && data().value == resource.data.value + 1;
+      allow delete: if false;
+    }
+
+    match /audit_logs/{id} {
+      allow read: if can('view_audit');
+      allow create: if signedIn() && data().userId == request.auth.uid && (isMember() || bootstrapping());
+      allow update, delete: if false;
+    }
+
+    match /notifications/{id} {
+      allow read: if isMember();
+      allow create: if isMember() && data().read == false;
+      allow update: if isMember() && onlyChanged(['read']);
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------ ledger
+    match /financial_transactions/{id} {
+      // Single reads are needed by every poster (idempotency check, reversal).
+      allow get: if isMember();
+      allow list: if canAny(['view_dashboard', 'view_reports']);
+      allow create: if isMember() && byMe()
+        && canPost(data().type, data().get('originalType', null))
+        && data().date is timestamp
+        && (data().type != 'reversal'
+            || (id == data().reversalOf + '_rev'
+                && exists(doc('financial_transactions', data().reversalOf))
+                && get(doc('financial_transactions', data().reversalOf)).data.type == data().originalType));
+      allow update, delete: if false;
+    }
+
+    match /cash_transactions/{txId} {
+      allow get: if isMember();
+      allow list: if canAny(['view_cashboxes', 'view_reports']);
+      allow create: if validSubLedger(txId, 'cashboxes', 'cashboxId');
+      allow update, delete: if false;
+    }
+
+    match /customer_transactions/{txId} {
+      allow get: if isMember();
+      allow list: if canAny(['view_customers', 'view_reports']);
+      allow create: if validSubLedger(txId, 'customers', 'customerId');
+      allow update, delete: if false;
+    }
+
+    match /supplier_transactions/{txId} {
+      allow get: if isMember();
+      allow list: if canAny(['view_suppliers', 'view_reports']);
+      allow create: if validSubLedger(txId, 'suppliers', 'supplierId');
+      allow update, delete: if false;
+    }
+
+    match /daily_stats/{day} {
+      // The ledger reads the day's document inside every posting transaction.
+      allow get: if isMember();
+      allow list: if canAny(['view_dashboard', 'view_reports']);
+      allow create, update: if isMember() && newFt(data().lastTxId);
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------ accounts
+    match /cashboxes/{id} {
+      allow read: if isMember();
+      allow create: if ((bootstrapping() || can('manage_cashboxes')) && data().balance == 0
+                        && !('lastTxId' in data()))
+        || (can('manage_cashboxes') && ledgerBalanceChange('cash_transactions', 'cashboxId', id, []));
+      allow update: if (can('manage_cashboxes')
+                        && onlyChanged(['name', 'kind', 'notes', 'active', 'updatedAt', 'updatedBy']))
+        || (isMember()
+            && ledgerBalanceChange('cash_transactions', 'cashboxId', id,
+                 ['balance', 'lastTxId', 'totalIn', 'totalOut', 'lastTxAt', 'updatedAt'])
+            && (data().balance >= 0 || data().balance >= resource.data.balance
+                || get(doc('settings', 'company')).data.allowNegativeCash == true));
+      allow delete: if false;
+    }
+
+    match /customers/{id} {
+      allow read: if canAny(['view_customers', 'manage_customers', 'create_sales', 'create_payment', 'cancel_sales', 'cancel_payments', 'view_reports']);
+      allow create: if can('manage_customers') && byMe()
+        && ((data().balance == 0 && !('lastTxId' in data()))
+            || ledgerBalanceChange('customer_transactions', 'customerId', id, []));
+      allow update: if (can('manage_customers')
+                        && onlyChanged(['name', 'phone', 'address', 'notes', 'keywords', 'active',
+                                        'updatedAt', 'updatedBy']))
+        || (isMember()
+            && ledgerBalanceChange('customer_transactions', 'customerId', id,
+                 ['balance', 'lastTxId', 'totalIncrease', 'totalDecrease', 'invoiceCount',
+                  'lastTxAt', 'updatedAt']));
+      allow delete: if false;
+    }
+
+    match /suppliers/{id} {
+      allow read: if canAny(['view_suppliers', 'manage_suppliers', 'create_purchases', 'create_supplier_payment', 'cancel_purchases', 'cancel_payments', 'view_reports']);
+      allow create: if can('manage_suppliers') && byMe()
+        && ((data().balance == 0 && !('lastTxId' in data()))
+            || ledgerBalanceChange('supplier_transactions', 'supplierId', id, []));
+      allow update: if (can('manage_suppliers')
+                        && onlyChanged(['name', 'phone', 'address', 'notes', 'keywords', 'active',
+                                        'updatedAt', 'updatedBy']))
+        || (isMember()
+            && ledgerBalanceChange('supplier_transactions', 'supplierId', id,
+                 ['balance', 'lastTxId', 'totalIncrease', 'totalDecrease', 'invoiceCount',
+                  'lastTxAt', 'updatedAt']));
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------ catalog
+    match /products/{id} {
+      allow read: if isMember();
+      allow create: if can('manage_catalog') && byMe() && data().stockQty is number;
+      allow update: if (can('manage_catalog')
+                        && onlyChanged(['name', 'sku', 'barcode', 'unit', 'sellPrice', 'lowStockAlert',
+                                        'description', 'keywords', 'active', 'updatedAt', 'updatedBy'])
+                           || (can('manage_catalog') && resource.data.stockQty <= 0
+                               && onlyChanged(['name', 'sku', 'barcode', 'unit', 'sellPrice', 'lowStockAlert',
+                                               'description', 'keywords', 'active', 'costPrice',
+                                               'updatedAt', 'updatedBy'])))
+        || (canAny(['create_sales', 'create_purchases', 'cancel_sales', 'cancel_purchases'])
+            && onlyChanged(['stockQty', 'costPrice', 'updatedAt'])
+            && data().costPrice is int && data().costPrice >= 0);
+      allow delete: if false;
+    }
+
+    match /services/{id} {
+      allow read: if isMember();
+      allow create: if can('manage_catalog') && byMe() && data().sellPrice is int && data().cost is int;
+      allow update: if can('manage_catalog');
+      allow delete: if false;
+    }
+
+    match /expense_categories/{id} {
+      allow read: if isMember();
+      allow create: if bootstrapping() || can('manage_expense_categories');
+      allow update: if can('manage_expense_categories');
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------ documents
+    match /sales/{id} {
+      allow read: if canAny(['view_sales', 'create_sales', 'cancel_sales']);
+      allow create: if can('create_sales') && validPostedDoc(id);
+      allow update: if can('cancel_sales') && validCancellation();
+      allow delete: if false;
+    }
+
+    match /sale_items/{id} {
+      allow read: if canAny(['view_reports', 'view_sales']);
+      allow create: if canAny(['create_sales', 'cancel_sales'])
+        && existsAfter(doc('sales', data().saleId));
+      allow update, delete: if false;
+    }
+
+    match /purchases/{id} {
+      allow read: if canAny(['view_purchases', 'create_purchases', 'cancel_purchases']);
+      allow create: if can('create_purchases') && validPostedDoc(id);
+      allow update: if can('cancel_purchases') && validCancellation();
+      allow delete: if false;
+    }
+
+    match /customer_payments/{id} {
+      allow read: if canAny(['view_customers', 'create_payment', 'cancel_payments']);
+      allow create: if can('create_payment') && validPostedDoc(id) && data().amount is int && data().amount > 0;
+      allow update: if can('cancel_payments') && validCancellation();
+      allow delete: if false;
+    }
+
+    match /supplier_payments/{id} {
+      allow read: if canAny(['view_suppliers', 'create_supplier_payment', 'cancel_payments']);
+      allow create: if can('create_supplier_payment') && validPostedDoc(id) && data().amount is int && data().amount > 0;
+      allow update: if can('cancel_payments') && validCancellation();
+      allow delete: if false;
+    }
+
+    match /expenses/{id} {
+      allow read: if canAny(['view_expenses', 'create_expense', 'cancel_payments']);
+      allow create: if can('create_expense') && validPostedDoc(id) && data().amount is int && data().amount > 0;
+      allow update: if can('cancel_payments') && validCancellation();
+      allow delete: if false;
+    }
+
+    match /transfers/{id} {
+      allow read: if canAny(['view_cashboxes', 'create_transfer', 'cancel_payments']);
+      allow create: if can('create_transfer') && validPostedDoc(id) && data().amount is int && data().amount > 0;
+      allow update: if can('cancel_payments') && validCancellation();
+      allow delete: if false;
+    }
+
+    // Anything not listed above is denied.
+  }
+}
