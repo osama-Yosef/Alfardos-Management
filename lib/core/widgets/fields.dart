@@ -193,14 +193,17 @@ class _SearchFieldState extends State<SearchField> {
       controller: _controller,
       autofocus: widget.autofocus,
       onChanged: _changed,
+      style: const TextStyle(color: Colors.black),
+      cursorColor: Colors.black,
       decoration: InputDecoration(
         hintText: widget.hint,
-        prefixIcon: const Icon(Symbols.search, size: 20),
+        hintStyle: const TextStyle(color: Colors.black),
+        prefixIcon: const Icon(Symbols.search, size: 20, color: Colors.black),
         suffixIcon: _controller.text.isEmpty
             ? null
             : IconButton(
                 tooltip: 'مسح',
-                icon: const Icon(Symbols.close, size: 18),
+                icon: const Icon(Symbols.close, size: 18, color: Colors.black),
                 onPressed: () {
                   _controller.clear();
                   _changed('');

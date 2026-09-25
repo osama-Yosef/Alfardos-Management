@@ -122,7 +122,14 @@ abstract final class AppTheme {
       chipTheme: base.chipTheme.copyWith(
         side: const BorderSide(color: AppColors.border),
         shape: const RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(8))),
-        labelStyle: const TextStyle(fontFamily: fontFamily, fontSize: 13),
+        labelStyle: const TextStyle(fontFamily: fontFamily, fontSize: 13, color: Colors.black),
+        secondaryLabelStyle: const TextStyle(
+          fontFamily: fontFamily,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: AppColors.primaryDark,
+        ),
+        iconTheme: const IconThemeData(color: Colors.black, size: 18),
         backgroundColor: AppColors.surface,
         selectedColor: AppColors.primarySoft,
       ),

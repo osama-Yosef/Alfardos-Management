@@ -45,10 +45,10 @@ class TopBar extends ConsumerWidget {
                     ),
                     child: const Row(
                       children: [
-                        Icon(Symbols.search, size: 20, color: AppColors.textMuted),
+                        Icon(Symbols.search, size: 20, color: Colors.black),
                         SizedBox(width: 8),
                         Text('ابحث عن عميل، مورد، صنف أو فاتورة...',
-                            style: TextStyle(color: AppColors.textMuted, fontSize: 13.5)),
+                            style: TextStyle(color: Colors.black, fontSize: 13.5)),
                       ],
                     ),
                   ),
