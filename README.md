@@ -62,6 +62,7 @@ all posted through one double-entry ledger so the numbers always add up.
 - **Customers and suppliers:** statements of account and opening balances
 - **Receipts and payments:** collect from customers, pay suppliers, move money between cashboxes, record expenses by category (with attachments)
 - **Stock:** products with weighted-average cost; services with their own cost and profit
+- **Manufactured products:** a product built from a recipe of stock items; selling it consumes its components at their current cost, and cancelling the sale returns them
 - **Reports:** profit, sales, purchases, expenses, debts, cashboxes, services, stock and the journal; export to PDF and Excel / CSV
 - **Users and roles:** built-in roles (admin, accountant, cashier, sales) plus custom roles with granular permissions such as `view_cost` or `cancel_sales`
 - **Audit log and notifications:** every change records who, what, when and where; alerts for low cash and large expenses
