@@ -13,16 +13,31 @@ import '../../catalog/domain/catalog_item.dart';
 /// Searchable picker of products (and services for sales). Exact barcode
 /// matches are resolved too, so a USB barcode scanner (keyboard wedge)
 /// works out of the box.
-Future<Sellable?> showItemSearch(BuildContext context, {required bool includeServices}) {
+///
+/// Manufactured products are sellable but hold no stock, so they are offered
+/// only when [includeManufactured] is true (sales), never for purchases or as
+/// components of another recipe.
+Future<Sellable?> showItemSearch(
+  BuildContext context, {
+  required bool includeServices,
+  bool? includeManufactured,
+  String title = 'إضافة صنف',
+}) {
   return showDialog<Sellable>(
     context: context,
-    builder: (_) => _ItemSearchDialog(includeServices: includeServices),
+    builder: (_) => _ItemSearchDialog(
+      includeServices: includeServices,
+      includeManufactured: includeManufactured ?? includeServices,
+      title: title,
+    ),
   );
 }
 
 class _ItemSearchDialog extends ConsumerStatefulWidget {
-  const _ItemSearchDialog({required this.includeServices});
+  const _ItemSearchDialog({required this.includeServices, required this.includeManufactured, required this.title});
   final bool includeServices;
+  final bool includeManufactured;
+  final String title;
 
   @override
   ConsumerState<_ItemSearchDialog> createState() => _ItemSearchDialogState();
@@ -48,10 +63,13 @@ class _ItemSearchDialogState extends ConsumerState<_ItemSearchDialog> {
       if (wantProducts) repo.searchProducts(q).then((l) => l.map(Sellable.product).toList()),
       if (wantServices) repo.searchServices(q).then((l) => l.map(Sellable.service).toList()),
     ]);
-    var list = [for (final r in results) ...r];
+    bool allowed(Sellable s) => widget.includeManufactured || !s.isManufactured;
+    var list = [for (final r in results) ...r.where(allowed)];
     if (list.isEmpty && q.trim().isNotEmpty && wantProducts) {
       final byBarcode = await repo.productByBarcode(q);
-      if (byBarcode != null && byBarcode.active) list = [Sellable.product(byBarcode)];
+      if (byBarcode != null && byBarcode.active && allowed(Sellable.product(byBarcode))) {
+        list = [Sellable.product(byBarcode)];
+      }
     }
     if (mounted && _query == q) setState(() => _results = list);
   }
@@ -69,7 +87,7 @@ class _ItemSearchDialogState extends ConsumerState<_ItemSearchDialog> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('إضافة صنف', style: t.titleLarge),
+              Text(widget.title, style: t.titleLarge),
               const SizedBox(height: 12),
               SearchField(onChanged: _search, autofocus: true, hint: 'اسم الصنف أو الكود أو الباركود...'),
               if (widget.includeServices) ...[
@@ -110,11 +128,16 @@ class _ItemSearchDialogState extends ConsumerState<_ItemSearchDialog> {
                             itemBuilder: (context, i) {
                               final item = _results![i];
                               final isService = item.kind == LineKind.service;
+                              final isStock = !isService && !item.isManufactured;
                               return ListTile(
                                 leading: CircleAvatar(
                                   backgroundColor: isService ? AppColors.infoSoft : AppColors.primarySoft,
                                   child: Icon(
-                                    isService ? Symbols.home_repair_service : Symbols.inventory_2,
+                                    isService
+                                        ? Symbols.home_repair_service
+                                        : item.isManufactured
+                                            ? Symbols.precision_manufacturing
+                                            : Symbols.inventory_2,
                                     size: 20,
                                     color: isService ? AppColors.info : AppColors.primary,
                                   ),
@@ -123,9 +146,11 @@ class _ItemSearchDialogState extends ConsumerState<_ItemSearchDialog> {
                                 subtitle: Text(
                                   isService
                                       ? 'خدمة'
-                                      : 'المخزون: ${formatQuantity(item.stockQty ?? 0)} ${item.unit}',
+                                      : item.isManufactured
+                                          ? 'منتج تصنيعي - يُخصم من مكوناته'
+                                          : 'المخزون: ${formatQuantity(item.stockQty ?? 0)} ${item.unit}',
                                   style: t.bodySmall?.copyWith(
-                                    color: !isService && (item.stockQty ?? 0) <= 0 ? AppColors.danger : null,
+                                    color: isStock && (item.stockQty ?? 0) <= 0 ? AppColors.danger : null,
                                   ),
                                 ),
                                 trailing: MoneyText(widget.includeServices ? item.price : item.cost),

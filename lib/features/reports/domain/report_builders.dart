@@ -319,7 +319,9 @@ abstract final class ReportBuilders {
   }
 
   static ReportData products(List<Product> products) {
-    final active = products.where((p) => p.active).toList()..sort((a, b) => a.name.compareTo(b.name));
+    // Manufactured products hold no stock; their components are listed instead.
+    final active = products.where((p) => p.active && !p.isManufactured).toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
     int value(Product p) => p.stockQty <= 0 ? 0 : Money.multiply(p.stockQty, p.costPrice);
     final total = active.fold<int>(0, (s, p) => s + value(p));
     return ReportData(

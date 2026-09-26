@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../core/accounting/invoice_calculator.dart';
+import '../../../core/accounting/recipe.dart';
 
 /// A stock-tracked product. [costPrice] is the current weighted-average cost,
 /// maintained by the ledger on every purchase/sale.
@@ -17,6 +18,7 @@ class Product {
     this.unit = 'قطعة',
     this.lowStockAlert = 0,
     this.description = '',
+    this.components = const [],
   });
 
   final String id;
@@ -31,7 +33,14 @@ class Product {
   final bool active;
   final String description;
 
-  bool get isLowStock => lowStockAlert > 0 && stockQty <= lowStockAlert;
+  /// Components of a manufactured product; empty for a stock product.
+  /// A manufactured product has no stock of its own: selling it consumes its
+  /// components, and [costPrice] is only an estimate saved with the recipe.
+  final List<RecipeComponent> components;
+
+  bool get isManufactured => components.isNotEmpty;
+
+  bool get isLowStock => !isManufactured && lowStockAlert > 0 && stockQty <= lowStockAlert;
 
   factory Product.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final m = doc.data() ?? const {};
@@ -47,6 +56,7 @@ class Product {
       lowStockAlert: (m['lowStockAlert'] as num?)?.toDouble() ?? 0,
       active: m['active'] as bool? ?? true,
       description: m['description'] as String? ?? '',
+      components: RecipeComponent.listFrom(m['components']),
     );
   }
 }
@@ -95,6 +105,7 @@ class Sellable {
     required this.cost,
     this.stockQty,
     this.unit = '',
+    this.isManufactured = false,
   });
 
   factory Sellable.product(Product p) => Sellable(
@@ -103,8 +114,11 @@ class Sellable {
         name: p.name,
         price: p.sellPrice,
         cost: p.costPrice,
-        stockQty: p.stockQty,
+        // Availability of a manufactured product depends on its components
+        // and is checked when the sale is posted.
+        stockQty: p.isManufactured ? null : p.stockQty,
         unit: p.unit,
+        isManufactured: p.isManufactured,
       );
 
   factory Sellable.service(ServiceItem s) => Sellable(
@@ -122,4 +136,5 @@ class Sellable {
   final int cost;
   final double? stockQty;
   final String unit;
+  final bool isManufactured;
 }

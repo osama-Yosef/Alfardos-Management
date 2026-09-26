@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../accounting/accounting_exception.dart';
 import '../accounting/costing.dart';
 import '../accounting/posting.dart';
+import '../accounting/recipe.dart';
 import '../audit/audit_entry.dart';
 import '../firebase/collections.dart';
 import '../settings/company_settings.dart';
@@ -27,6 +28,7 @@ class ProductSnapshot {
     required this.stockQty,
     required this.costPrice,
     required this.active,
+    this.components = const [],
   });
 
   final String id;
@@ -34,6 +36,11 @@ class ProductSnapshot {
   final double stockQty;
   final int costPrice;
   final bool active;
+
+  /// Non-empty for a manufactured product (see [Recipe]).
+  final List<RecipeComponent> components;
+
+  bool get isManufactured => components.isNotEmpty;
 }
 
 /// Everything a posting builder may need, read atomically inside the
@@ -335,6 +342,9 @@ class LedgerService {
       final p = isNew
           ? ProductSnapshot(id: m.productId, name: m.name, stockQty: 0, costPrice: 0, active: true)
           : _productOf(snap);
+      if (p.isManufactured) {
+        throw AccountingException(AccountingError.manufacturedNotStockable, p.name);
+      }
       final current =
           newStock[m.productId] ?? (quantity: p.stockQty, unitCost: p.costPrice);
       final next = _costing.apply(current, m);
@@ -566,6 +576,7 @@ class LedgerService {
       stockQty: (m['stockQty'] as num?)?.toDouble() ?? 0,
       costPrice: (m['costPrice'] as num?)?.toInt() ?? 0,
       active: m['active'] as bool? ?? true,
+      components: RecipeComponent.listFrom(m['components']),
     );
   }
 

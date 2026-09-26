@@ -162,7 +162,7 @@ class _LineRowState extends ConsumerState<_LineRow> {
           isService
               ? 'خدمة'
               : stock == null
-                  ? 'منتج'
+                  ? (line.item.isManufactured ? 'منتج تصنيعي - يُخصم من مكوناته' : 'منتج')
                   : 'المتوفر: ${formatQuantity(stock)} ${line.item.unit}${lowStock ? ' - الكمية غير كافية' : ''}',
           style: t.bodySmall?.copyWith(color: lowStock ? AppColors.warning : null),
         ),

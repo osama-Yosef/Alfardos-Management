@@ -48,6 +48,13 @@ Every financial operation becomes a `Posting` (built by `PostingFactory`):
 **Double-entry check:** every posting must satisfy `Posting.isBalanced`, otherwise it is rejected:
 `Δcash + Δreceivables + Δinventory − Δpayables − service cost = net profit + capital`
 
+**Manufactured products** (`core/accounting/recipe.dart`) are products with a list of
+components (stock products and the quantity of each per unit). They hold no stock of
+their own and cannot be purchased or given opening stock. Selling one moves its
+*components* out of stock (sold qty × component qty); the line cost is the components'
+current average cost, split across their stock movements with the largest-remainder
+method so the posting stays exactly balanced. Cancelling the sale returns the components.
+
 **Profit:** `revenue − cost of goods sold (actual weighted-average cost at sale time)
 − service cost − operating expenses`. Purchases never reduce profit directly.
 Costing is behind the `CostingPolicy` interface (weighted average today), so FIFO can be added later.
@@ -86,7 +93,7 @@ balances**. Reads work offline from the persistent cache, and the top bar shows 
 | `counters/{sales,purchases,...}` | `value` (security rules only allow +1) |
 | `customers`, `suppliers` | name, phone, keywords[], **balance**, lastTxId, totals, invoiceCount, active |
 | `cashboxes` | name, kind, **balance**, lastTxId, totalIn, totalOut, active |
-| `products` | name, sku, barcode, unit, sellPrice, **costPrice (avg)**, **stockQty**, lowStockAlert |
+| `products` | name, sku, barcode, unit, sellPrice, **costPrice (avg)**, **stockQty**, lowStockAlert; manufactured: `type: manufactured`, `components[] {id, name, qty}`, costPrice = estimate |
 | `services` | name, sellPrice, cost, active |
 | `expense_categories` | name, order, active |
 | `sales`, `purchases` | number, date, party, lines[], totals, paid, remaining, cost, profit, status |

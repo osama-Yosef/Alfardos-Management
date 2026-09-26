@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../core/accounting/posting_factory.dart';
+import '../../../core/accounting/recipe.dart';
 import '../../../core/audit/audit_entry.dart';
 import '../../../core/firebase/collections.dart';
 import '../../../core/ledger/ledger_service.dart';
@@ -36,6 +37,46 @@ class ProductInput {
         'unit': unit.trim().isEmpty ? 'قطعة' : unit.trim(),
         'sellPrice': sellPrice,
         'lowStockAlert': lowStockAlert,
+        'description': description.trim(),
+        'keywords': Keywords.build([name, sku, barcode]),
+      };
+}
+
+/// A manufactured product: a sell price and the stock products (with the
+/// quantity of each) consumed from stock every time one unit is sold.
+class ManufacturedInput {
+  const ManufacturedInput({
+    required this.name,
+    required this.sellPrice,
+    required this.components,
+    required this.estimatedCost,
+    this.sku = '',
+    this.barcode = '',
+    this.unit = 'قطعة',
+    this.description = '',
+  });
+
+  final String name;
+  final String sku;
+  final String barcode;
+  final String unit;
+  final int sellPrice;
+  final List<RecipeComponent> components;
+
+  /// Components' cost when the recipe was saved, shown in lists. Sales use
+  /// the components' actual cost at the time of sale instead.
+  final int estimatedCost;
+  final String description;
+
+  Map<String, dynamic> toMap() => {
+        'name': name.trim(),
+        'sku': sku.trim(),
+        'barcode': barcode.trim(),
+        'unit': unit.trim().isEmpty ? 'قطعة' : unit.trim(),
+        'sellPrice': sellPrice,
+        'costPrice': estimatedCost,
+        'type': 'manufactured',
+        'components': [for (final c in components) c.toMap()],
         'description': description.trim(),
         'keywords': Keywords.build([name, sku, barcode]),
       };
@@ -90,6 +131,12 @@ class CatalogRepository {
     Query<Map<String, dynamic>> q = _products.where('active', isEqualTo: true);
     q = term == null ? q.orderBy('name').limit(limit) : q.where('keywords', arrayContains: term).limit(limit);
     return (await q.get()).docs.map(Product.fromDoc).toList();
+  }
+
+  /// Current state of the given products (e.g. a recipe's components).
+  Future<List<Product>> productsByIds(Iterable<String> ids) async {
+    final snaps = await Future.wait([for (final id in ids) _products.doc(id).get()]);
+    return [for (final s in snaps) if (s.exists) Product.fromDoc(s)];
   }
 
   /// Exact barcode lookup (for scanner integration).
@@ -166,6 +213,60 @@ class CatalogRepository {
     );
     final batch = _db.batch()
       ..update(_products.doc(before.id), changes)
+      ..set(audit.newRef(_db), audit.toMap(uid: user.uid, userName: user.name));
+    await batch.commit();
+  }
+
+  /// Creates a manufactured product. It never holds stock, so nothing is
+  /// posted to the ledger until it is sold.
+  Future<String> createManufactured(ManufacturedInput input, AppUser user) async {
+    final ref = _products.doc();
+    Recipe.validate(ref.id, input.components);
+    final audit = AuditEntry(
+      action: AuditAction.create,
+      entityType: Col.products,
+      entityId: ref.id,
+      summary: 'إضافة منتج تصنيعي: ${input.name.trim()}',
+      after: input.toMap()..remove('keywords'),
+    );
+    final batch = _db.batch()
+      ..set(ref, {
+        ...input.toMap(),
+        'stockQty': 0.0,
+        'lowStockAlert': 0,
+        'active': true,
+        'createdAt': FieldValue.serverTimestamp(),
+        'createdBy': user.uid,
+      })
+      ..set(audit.newRef(_db), audit.toMap(uid: user.uid, userName: user.name));
+    await batch.commit();
+    return ref.id;
+  }
+
+  Future<void> updateManufactured(Product before, ManufacturedInput input, AppUser user) async {
+    Recipe.validate(before.id, input.components);
+    final audit = AuditEntry(
+      action: AuditAction.update,
+      entityType: Col.products,
+      entityId: before.id,
+      summary: 'تعديل منتج تصنيعي: ${input.name.trim()}',
+      before: {
+        'name': before.name,
+        'sellPrice': before.sellPrice,
+        'components': [for (final c in before.components) c.toMap()],
+      },
+      after: {
+        'name': input.name.trim(),
+        'sellPrice': input.sellPrice,
+        'components': [for (final c in input.components) c.toMap()],
+      },
+    );
+    final batch = _db.batch()
+      ..update(_products.doc(before.id), {
+        ...input.toMap(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': user.uid,
+      })
       ..set(audit.newRef(_db), audit.toMap(uid: user.uid, userName: user.name));
     await batch.commit();
   }

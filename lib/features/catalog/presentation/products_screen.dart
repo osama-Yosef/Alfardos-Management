@@ -21,6 +21,7 @@ import '../../settings/application/settings_providers.dart';
 import '../application/catalog_providers.dart';
 import '../data/catalog_repository.dart';
 import '../domain/catalog_item.dart';
+import 'manufactured_form.dart';
 
 class ProductsScreen extends ConsumerStatefulWidget {
   const ProductsScreen({super.key, this.initialQuery = ''});
@@ -41,15 +42,50 @@ class _ProductsScreenState extends ConsumerState<ProductsScreen> {
     final canCost = ref.watch(canProvider(Permission.viewCost));
     final query = ref.watch(catalogRepositoryProvider).productsQuery(search: _search, filter: _filter);
     void add() => _showProductForm(context);
+    void addManufactured() => showManufacturedForm(context);
+    void open(Product p) =>
+        p.isManufactured ? showManufacturedForm(context, product: p) : _showProductForm(context, product: p);
+    Future<void> chooseKind() => showModalBottomSheet<void>(
+          context: context,
+          builder: (ctx) => SafeArea(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              ListTile(
+                leading: const Icon(Symbols.inventory_2),
+                title: const Text('منتج مخزني'),
+                subtitle: const Text('يُشترى ويُباع وله رصيد في المخزون'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  add();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Symbols.precision_manufacturing),
+                title: const Text('منتج تصنيعي'),
+                subtitle: const Text('يتكون من منتجات أخرى تُخصم من المخزون عند بيعه'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  addManufactured();
+                },
+              ),
+            ]),
+          ),
+        );
 
     return PageScaffold(
       title: 'المنتجات والمخزون',
       actions: [
-        if (canManage && !context.isMobile)
+        if (canManage && !context.isMobile) ...[
+          OutlinedButton.icon(
+            onPressed: addManufactured,
+            icon: const Icon(Symbols.precision_manufacturing),
+            label: const Text('منتج تصنيعي'),
+          ),
+          const SizedBox(width: 8),
           FilledButton.icon(onPressed: add, icon: const Icon(Symbols.add), label: const Text('إضافة منتج')),
+        ],
       ],
       floatingAction: canManage && context.isMobile
-          ? FloatingActionButton(onPressed: add, child: const Icon(Symbols.add))
+          ? FloatingActionButton(onPressed: chooseKind, child: const Icon(Symbols.add))
           : null,
       body: ListPageBody(
         toolbar: Wrap(
@@ -88,15 +124,21 @@ class _ProductsScreenState extends ConsumerState<ProductsScreen> {
             actionLabel: canManage && _search.isEmpty ? 'إضافة منتج' : null,
             onAction: add,
           ),
-          itemBuilder: (context, p, _) => ListTile(
-            onTap: canManage ? () => _showProductForm(context, product: p) : null,
+          itemBuilder: (context, p, _) {
+            final warn = !p.isManufactured && (p.isLowStock || p.stockQty <= 0);
+            return ListTile(
+            onTap: canManage ? () => open(p) : null,
             leading: CircleAvatar(
-              backgroundColor: p.isLowStock || p.stockQty <= 0 ? AppColors.warningSoft : AppColors.primarySoft,
-              child: Icon(Symbols.inventory_2, size: 20,
-                  color: p.isLowStock || p.stockQty <= 0 ? AppColors.warning : AppColors.primary),
+              backgroundColor: warn ? AppColors.warningSoft : AppColors.primarySoft,
+              child: Icon(p.isManufactured ? Symbols.precision_manufacturing : Symbols.inventory_2, size: 20,
+                  color: warn ? AppColors.warning : AppColors.primary),
             ),
             title: Row(children: [
               Flexible(child: Text(p.name, overflow: TextOverflow.ellipsis)),
+              if (p.isManufactured) ...[
+                const SizedBox(width: 8),
+                const StatusBadge('تصنيع', tone: Tone.info),
+              ],
               if (!p.active) ...[const SizedBox(width: 8), StatusBadge.active(false)],
               if (p.active && p.isLowStock) ...[
                 const SizedBox(width: 8),
@@ -105,14 +147,20 @@ class _ProductsScreenState extends ConsumerState<ProductsScreen> {
             ]),
             subtitle: Text(
               [
-                'المخزون: ${formatQuantity(p.stockQty)} ${p.unit}',
-                if (canCost) 'التكلفة: ${ref.watch(moneyFormatterProvider)(p.costPrice)}',
+                if (p.isManufactured) ...[
+                  'المكونات: ${p.components.map((c) => '${c.name} × ${formatQuantity(c.quantity)}').join('، ')}',
+                  if (canCost) 'التكلفة التقديرية: ${ref.watch(moneyFormatterProvider)(p.costPrice)}',
+                ] else ...[
+                  'المخزون: ${formatQuantity(p.stockQty)} ${p.unit}',
+                  if (canCost) 'التكلفة: ${ref.watch(moneyFormatterProvider)(p.costPrice)}',
+                ],
                 if (p.sku.isNotEmpty) 'كود: ${p.sku}',
               ].join(' • '),
               style: Theme.of(context).textTheme.bodySmall,
             ),
             trailing: MoneyText(p.sellPrice, style: Theme.of(context).textTheme.titleSmall),
-          ),
+          );
+          },
         ),
       ),
     );

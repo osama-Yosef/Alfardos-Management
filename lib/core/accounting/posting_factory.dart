@@ -1,6 +1,7 @@
 import 'accounting_exception.dart';
 import 'invoice_calculator.dart';
 import 'posting.dart';
+import 'recipe.dart';
 
 /// Builds the [Posting] for every kind of financial operation.
 ///
@@ -14,6 +15,10 @@ abstract final class PostingFactory {
   ///   (net effect: receivable grows by the remaining amount).
   /// * Products leave stock at their actual cost (COGS); services recognise
   ///   their configured cost.
+  /// * A manufactured product (a key of [recipes]) has no stock of its own:
+  ///   its components leave stock instead, and the line cost is split across
+  ///   them in proportion to their cost, so inventory moves by exactly the
+  ///   cost of goods sold.
   static Posting sale({
     required String saleId,
     required String number,
@@ -22,6 +27,7 @@ abstract final class PostingFactory {
     String? customerId,
     String? customerName,
     String? cashboxId,
+    Map<String, List<CostedComponent>> recipes = const {},
   }) {
     if (totals.paid > 0 && cashboxId == null) {
       throw const AccountingException(AccountingError.cashboxRequired);
@@ -47,12 +53,16 @@ abstract final class PostingFactory {
       stock: [
         for (final line in totals.lines)
           if (line.input.kind == LineKind.product)
-            StockMovement(
-              productId: line.input.itemId,
-              name: line.input.name,
-              quantity: -line.input.quantity,
-              value: -line.totalCost,
-            ),
+            ...recipes.containsKey(line.input.itemId)
+                ? _componentMovements(line, recipes[line.input.itemId]!)
+                : [
+                    StockMovement(
+                      productId: line.input.itemId,
+                      name: line.input.name,
+                      quantity: -line.input.quantity,
+                      value: -line.totalCost,
+                    ),
+                  ],
       ],
       metrics: PostingMetrics(
         sales: totals.total,
@@ -311,6 +321,29 @@ abstract final class PostingFactory {
       ],
       capital: value,
     ));
+  }
+
+  /// Stock movements for one sold line of a manufactured product.
+  static List<StockMovement> _componentMovements(
+    InvoiceLineResult line,
+    List<CostedComponent> components,
+  ) {
+    if (components.isEmpty) {
+      throw const AccountingException(AccountingError.emptyRecipe);
+    }
+    final shares = InvoiceCalculator.allocate(
+      line.totalCost,
+      [for (final c in components) c.costPerUnit],
+    );
+    return [
+      for (var i = 0; i < components.length; i++)
+        StockMovement(
+          productId: components[i].productId,
+          name: components[i].name,
+          quantity: -Recipe.consumed(line.input.quantity, components[i].quantity),
+          value: -shares[i],
+        ),
+    ];
   }
 
   static void _requirePositive(int amount) {

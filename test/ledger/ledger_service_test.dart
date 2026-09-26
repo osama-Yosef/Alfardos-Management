@@ -1,5 +1,7 @@
 import 'package:app_alfardos/core/accounting/accounting_exception.dart';
 import 'package:app_alfardos/core/accounting/invoice_calculator.dart';
+import 'package:app_alfardos/core/accounting/recipe.dart';
+import 'package:app_alfardos/core/money/money.dart';
 import 'package:app_alfardos/core/firebase/collections.dart';
 import 'package:app_alfardos/core/ledger/ledger_service.dart';
 import 'package:app_alfardos/features/auth/domain/app_user.dart';
@@ -17,6 +19,7 @@ import 'package:app_alfardos/core/utils/dates.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'package:mocktail/mocktail.dart';
 
 class _MockStorage extends Mock implements FirebaseStorage {}
@@ -50,6 +53,8 @@ void main() {
   Future<Cashbox> box(String id) async => Cashbox.fromDoc(await db.collection(Col.cashboxes).doc(id).get());
   Future<Party> party(PartyKind k, String id) async =>
       Party.fromDoc(k, await db.collection(k.collection).doc(id).get());
+
+  setUpAll(() => initializeDateFormatting('en'));
 
   setUp(() async {
     db = FakeFirebaseFirestore();
@@ -271,5 +276,95 @@ void main() {
       throwsA(isA<AccountingException>().having((e) => e.error, 'error', AccountingError.creditRequiresParty)),
     );
     expect((await db.collection(Col.sales).get()).docs, isEmpty);
+  });
+
+  group('manufactured products', () {
+    late String main;
+    late String leg;
+    late String top;
+    late String table;
+
+    setUp(() async {
+      main = await newBox('Main', 0);
+      leg = await catalog.createProduct(const ProductInput(name: 'رجل', sellPrice: 5000),
+          costPrice: 2500, openingQty: 20, user: admin, ledger: ledger);
+      top = await catalog.createProduct(const ProductInput(name: 'سطح', sellPrice: 30000),
+          costPrice: 15000, openingQty: 5, user: admin, ledger: ledger);
+      table = await catalog.createManufactured(
+        ManufacturedInput(
+          name: 'طاولة',
+          sellPrice: 40000,
+          estimatedCost: 25000,
+          components: [
+            RecipeComponent(productId: leg, name: 'رجل', quantity: 4),
+            RecipeComponent(productId: top, name: 'سطح', quantity: 1),
+          ],
+        ),
+        admin,
+      );
+    });
+
+    InvoiceSubmission sellTables(double qty) => sale(
+          lines: [InvoiceLineInput(kind: LineKind.product, itemId: table, name: 'طاولة', quantity: qty, unitPrice: 40000)],
+          cashboxId: main,
+          paid: Money.multiply(qty, 40000),
+        );
+
+    test('selling deducts the components and books their actual cost', () async {
+      final out = await sales.create(sellTables(2), ledger);
+
+      expect((await doc(Col.products, leg))['stockQty'], 12.0);
+      expect((await doc(Col.products, top))['stockQty'], 3.0);
+      expect((await doc(Col.products, table))['stockQty'], 0.0);
+      expect(await balance(Col.cashboxes, main), 80000);
+
+      final invoice = await doc(Col.sales, out.postingId);
+      expect(invoice['productCost'], 2 * 25000);
+      expect(invoice['grossProfit'], 80000 - 50000);
+      final stats = await doc(Col.dailyStats, Dates.dayKey(DateTime.now()));
+      expect(stats['productCost'], 50000);
+
+      // Cancelling returns every component to stock.
+      final inv = Invoice.fromDoc(InvoiceKind.sale, await db.collection(Col.sales).doc(out.postingId).get());
+      await sales.cancel(inv, 'تجربة', ledger);
+      expect((await doc(Col.products, leg))['stockQty'], 20.0);
+      expect((await doc(Col.products, top))['stockQty'], 5.0);
+      expect((await doc(Col.products, leg))['costPrice'], 2500);
+      expect(await balance(Col.cashboxes, main), 0);
+    });
+
+    test('a component short on stock rejects the whole sale', () async {
+      await db.collection(Col.settings).doc(DocIds.companySettings).update({'allowNegativeStock': false});
+      await expectLater(
+        sales.create(sellTables(6), ledger), // needs 6 tops, only 5 in stock
+        throwsA(isA<AccountingException>().having((e) => e.error, 'error', AccountingError.insufficientStock)),
+      );
+      expect((await doc(Col.products, leg))['stockQty'], 20.0);
+      expect((await db.collection(Col.sales).get()).docs, isEmpty);
+    });
+
+    test('a manufactured product cannot be purchased into stock', () async {
+      final funded = await newBox('Funded', 100000);
+      await expectLater(
+        purchases.create(
+          InvoiceSubmission(
+            kind: InvoiceKind.purchase,
+            postingId: newId(),
+            date: DateTime.now(),
+            lines: [InvoiceLineInput(kind: LineKind.product, itemId: table, name: 'طاولة', quantity: 1, unitPrice: 20000)],
+            discount: 0,
+            paid: 20000,
+            method: PaymentMethod.cash,
+            notes: '',
+            cashboxId: funded,
+            cashboxName: 'Funded',
+          ),
+          ledger,
+        ),
+        throwsA(isA<AccountingException>()
+            .having((e) => e.error, 'error', AccountingError.manufacturedNotStockable)),
+      );
+      expect((await doc(Col.products, table))['stockQty'], 0.0);
+    });
   });
 }

@@ -22,7 +22,10 @@ enum AccountingError {
   alreadyCancelled('هذه العملية ملغاة مسبقاً.'),
   cannotReverseReversal('لا يمكن إلغاء قيد عكسي.'),
   unbalancedPosting('خطأ داخلي: القيد المحاسبي غير متوازن. لم يتم حفظ العملية.'),
-  tooManyLines('عدد الأصناف في الفاتورة كبير جداً. الحد الأقصى 150 صنفاً.');
+  tooManyLines('عدد الأصناف في الفاتورة كبير جداً. الحد الأقصى 150 صنفاً.'),
+  emptyRecipe('يجب إضافة مكوّن واحد على الأقل للمنتج التصنيعي.'),
+  invalidRecipe('مكوّن غير صالح أو مكرر في المنتج التصنيعي.'),
+  manufacturedNotStockable('المنتج التصنيعي ليس له مخزون خاص به، اشترِ مكوناته بدلاً منه.');
 
   const AccountingError(this.message);
   final String message;

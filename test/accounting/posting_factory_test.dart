@@ -3,6 +3,8 @@ import 'package:app_alfardos/core/accounting/costing.dart';
 import 'package:app_alfardos/core/accounting/invoice_calculator.dart';
 import 'package:app_alfardos/core/accounting/posting.dart';
 import 'package:app_alfardos/core/accounting/posting_factory.dart';
+import 'package:app_alfardos/core/accounting/recipe.dart';
+import 'package:app_alfardos/core/money/money.dart';
 import 'package:app_alfardos/core/accounting/statement.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -329,6 +331,97 @@ void main() {
       books.post(second.reversed(reversalOfId: 'x', date: date, description: ''));
       expect(books.stock['a'], (quantity: 10.0, unitCost: 10000));
       expect(books.suppliers['sup'], 100000);
+    });
+  });
+
+  group('Manufactured products', () {
+    // One table = 4 legs @ 25.00 + 1 top @ 150.00 + 0.5 kg glue @ 10.00.
+    const legs = CostedComponent(productId: 'leg', name: 'رجل', quantity: 4, unitCost: 2500);
+    const top = CostedComponent(productId: 'top', name: 'سطح', quantity: 1, unitCost: 15000);
+    const glue = CostedComponent(productId: 'glue', name: 'غراء', quantity: 0.5, unitCost: 1000);
+    const recipe = [legs, top, glue];
+
+    Posting sellTables(double qty, {int price = 40000, int discount = 0}) {
+      final totals = InvoiceCalculator.calculate(
+        lines: [
+          InvoiceLineInput(
+            kind: LineKind.product, itemId: 'table', name: 'طاولة',
+            quantity: qty, unitPrice: price, unitCost: Recipe.unitCost(recipe),
+          ),
+        ],
+        discount: discount,
+        paid: Money.multiply(qty, price) - discount,
+      );
+      return PostingFactory.sale(
+        saleId: 's1', number: 'INV-1', date: date, totals: totals,
+        cashboxId: 'main', recipes: const {'table': recipe},
+      );
+    }
+
+    test('unit cost is the sum of the components', () {
+      expect(Recipe.unitCost(recipe), 4 * 2500 + 15000 + 500);
+    });
+
+    test('selling consumes the components, never the manufactured product', () {
+      final p = sellTables(3);
+      expect(p.stock.map((m) => m.productId), ['leg', 'top', 'glue']);
+      expect(p.stock.map((m) => m.quantity), [-12.0, -3.0, -1.5]);
+      expect(p.stock.map((m) => m.value), [-30000, -45000, -1500]);
+      expect(p.metrics.productCost, 3 * 25500);
+      expect(p.inventoryDelta, -p.metrics.productCost);
+      expect(p.metrics.grossProfit, 3 * 40000 - 3 * 25500);
+      expect(p.isBalanced, isTrue);
+    });
+
+    test('rounding never unbalances the entry', () {
+      const odd = [
+        CostedComponent(productId: 'x', name: 'X', quantity: 1 / 3, unitCost: 1001),
+        CostedComponent(productId: 'y', name: 'Y', quantity: 0.7, unitCost: 333),
+      ];
+      final totals = InvoiceCalculator.calculate(lines: [
+        InvoiceLineInput(kind: LineKind.product, itemId: 'm', name: 'M', quantity: 7,
+            unitPrice: 999, unitCost: Recipe.unitCost(odd)),
+      ], discount: 13);
+      final p = PostingFactory.sale(
+        saleId: 's', number: 'n', date: date, totals: totals,
+        customerId: 'c', recipes: const {'m': odd},
+      );
+      expect(p.inventoryDelta, -totals.productCost);
+      expect(p.isBalanced, isTrue);
+    });
+
+    test('cancelling the sale returns the components to stock at their cost', () {
+      final books = Books()
+        ..stock['leg'] = (quantity: 20, unitCost: 2500)
+        ..stock['top'] = (quantity: 5, unitCost: 15000)
+        ..stock['glue'] = (quantity: 3, unitCost: 1000);
+      final sale = sellTables(2, discount: 5000);
+      books.post(sale);
+      expect(books.stock['leg']!.quantity, 12);
+      expect(books.stock['top']!.quantity, 3);
+      expect(books.stock['glue']!.quantity, 2);
+      expect(books.stock.containsKey('table'), isFalse);
+
+      books.post(sale.reversed(reversalOfId: 'x', date: date, description: ''));
+      expect(books.stock['leg'], (quantity: 20.0, unitCost: 2500));
+      expect(books.stock['top'], (quantity: 5.0, unitCost: 15000));
+      expect(books.stock['glue'], (quantity: 3.0, unitCost: 1000));
+      expect(books.metrics.grossProfit, 0);
+    });
+
+    test('a recipe needs components with positive, unique quantities', () {
+      expect(() => Recipe.validate('m', const []),
+          throwsA(isA<AccountingException>().having((e) => e.error, 'error', AccountingError.emptyRecipe)));
+      expect(() => Recipe.validate('m', const [RecipeComponent(productId: 'a', name: 'A', quantity: 0)]),
+          throwsA(isA<AccountingException>().having((e) => e.error, 'error', AccountingError.invalidQuantity)));
+      expect(
+          () => Recipe.validate('m', const [
+                RecipeComponent(productId: 'a', name: 'A', quantity: 1),
+                RecipeComponent(productId: 'a', name: 'A', quantity: 2),
+              ]),
+          throwsA(isA<AccountingException>().having((e) => e.error, 'error', AccountingError.invalidRecipe)));
+      expect(() => Recipe.validate('m', const [RecipeComponent(productId: 'm', name: 'M', quantity: 1)]),
+          throwsA(isA<AccountingException>().having((e) => e.error, 'error', AccountingError.invalidRecipe)));
     });
   });
 

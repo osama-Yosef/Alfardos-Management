@@ -262,7 +262,7 @@ service cloud.firestore {
                            || (can('manage_catalog') && resource.data.stockQty <= 0
                                && onlyChanged(['name', 'sku', 'barcode', 'unit', 'sellPrice', 'lowStockAlert',
                                                'description', 'keywords', 'active', 'costPrice',
-                                               'updatedAt', 'updatedBy'])))
+                                               'components', 'updatedAt', 'updatedBy'])))
         || (canAny(['create_sales', 'create_purchases', 'cancel_sales', 'cancel_purchases'])
             && onlyChanged(['stockQty', 'costPrice', 'updatedAt'])
             && data().costPrice is int && data().costPrice >= 0);

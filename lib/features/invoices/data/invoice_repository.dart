@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/accounting/accounting_exception.dart';
 import '../../../core/accounting/invoice_calculator.dart';
 import '../../../core/accounting/posting_factory.dart';
+import '../../../core/accounting/recipe.dart';
 import '../../../core/audit/audit_entry.dart';
 import '../../../core/firebase/collections.dart';
 import '../../../core/ledger/ledger_service.dart';
@@ -56,7 +57,7 @@ class InvoiceRepository {
 
   /// Posts an invoice: invoice document, item records, ledger entries,
   /// balances and stock — one atomic transaction.
-  Future<PostingOutcome> create(InvoiceSubmission s, LedgerService ledger) {
+  Future<PostingOutcome> create(InvoiceSubmission s, LedgerService ledger) async {
     if (s.lines.length > maxLines) {
       throw const AccountingException(AccountingError.tooManyLines);
     }
@@ -65,6 +66,17 @@ class InvoiceRepository {
       for (final l in s.lines)
         if (l.kind == LineKind.product) l.itemId,
     };
+    if (kind.isSale) {
+      // Selling a manufactured product consumes its components, so they must
+      // be read inside the transaction too. The recipe itself is re-read
+      // there; this only tells the ledger which documents to read.
+      final snaps = await Future.wait([
+        for (final id in productIds) _db.collection(Col.products).doc(id).get(),
+      ]);
+      for (final snap in snaps) {
+        productIds.addAll(RecipeComponent.listFrom(snap.data()?['components']).map((c) => c.productId));
+      }
+    }
 
     return ledger.post(PostingRequest(
       postingId: s.postingId,
@@ -73,13 +85,28 @@ class InvoiceRepository {
       build: (ctx) {
         final number = ctx.number!;
         // Sales use the product's *current* weighted-average cost, read
-        // inside this transaction, as the actual cost of goods sold.
+        // inside this transaction, as the actual cost of goods sold. A
+        // manufactured product costs the sum of its components' costs.
+        final recipes = <String, List<CostedComponent>>{};
+        int saleCost(String productId) {
+          final p = ctx.product(productId);
+          if (!p.isManufactured) return p.costPrice;
+          final components = recipes[productId] ??= [
+            for (final c in p.components)
+              CostedComponent(
+                productId: c.productId,
+                name: ctx.product(c.productId).name,
+                quantity: c.quantity,
+                unitCost: ctx.product(c.productId).costPrice,
+              ),
+          ];
+          return Recipe.unitCost(components);
+        }
+
         final lines = kind.isSale
             ? [
                 for (final l in s.lines)
-                  l.kind == LineKind.product
-                      ? l.copyWith(unitCost: ctx.product(l.itemId).costPrice)
-                      : l,
+                  l.kind == LineKind.product ? l.copyWith(unitCost: saleCost(l.itemId)) : l,
               ]
             : s.lines;
         final totals = InvoiceCalculator.calculate(lines: lines, discount: s.discount, paid: s.paid);
@@ -92,6 +119,7 @@ class InvoiceRepository {
                 customerId: s.party?.id,
                 customerName: s.party?.name,
                 cashboxId: totals.paid > 0 ? s.cashboxId : null,
+                recipes: recipes,
               )
             : PostingFactory.purchase(
                 purchaseId: ref.id,
